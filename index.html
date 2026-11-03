@@ -550,72 +550,88 @@ renderScript();
 
 </script>
 <script>
-/* Mon Japonais – choix de la voix japonaise, propre à cet appareil. */
+/* Mon Japonais — audio japonais avec repli mobile si getVoices() est vide. */
 (function(){
   'use strict';
   const selector=document.getElementById('jpvoice');
   const button=document.getElementById('jpvoicetest');
   const note=document.getElementById('jpvoicenote');
+  if(!selector||!button||!note)return;
   const key='monjaponais_japanese_voice_v1';
   const synth=window.speechSynthesis;
-  if(!synth||!window.SpeechSynthesisUtterance){
-    selector.innerHTML='<option>Voix non disponibles</option>';
-    selector.disabled=true;button.disabled=true;return;
-  }
+  const supported=!!synth&&typeof window.SpeechSynthesisUtterance==='function';
   let voices=[];
   let activeUtterance=null;
-  function available(){return synth.getVoices().filter(v=>/^ja(?:-|$)/i.test(v.lang));}
+  if(!supported){
+    selector.innerHTML='<option value="">Synthèse vocale indisponible</option>';
+    selector.disabled=true;
+    button.disabled=true;
+    note.textContent='Ce navigateur ne prend pas en charge la synthèse vocale.';
+    return;
+  }
+  function available(){
+    try{return synth.getVoices().filter(v=>/^ja(?:-|$)/i.test(v.lang));}
+    catch(e){return [];}
+  }
   function populate(){
     voices=available();
-    const old=selector.value;
+    const previous=selector.value;
     let preferred='';try{preferred=localStorage.getItem(key)||'';}catch(e){}
     selector.replaceChildren();
-    if(!voices.length){
-      const o=document.createElement('option');o.textContent='Aucune voix japonaise détectée';o.value='';selector.appendChild(o);
-      selector.disabled=true;button.disabled=true;
-      note.textContent='Installe une voix japonaise sur ton ordinateur ou vérifie les voix de Chrome.';
-      return;
-    }
-    selector.disabled=false;button.disabled=false;
-    voices.forEach((v,i)=>{
-      const o=document.createElement('option');o.value=String(i);
+    // Sur Android, speechSynthesis fonctionne souvent sans exposer ses voix.
+    // L'option automatique laisse le moteur vocal choisir ja-JP.
+    const auto=document.createElement('option');
+    auto.value='auto';auto.textContent='Automatique · voix japonaise de cet appareil';
+    selector.appendChild(auto);
+    voices.forEach(v=>{
+      const o=document.createElement('option');
+      o.value=v.voiceURI;
       o.textContent=v.name+' ('+v.lang+')'+(v.localService?' · locale':' · en ligne');
       selector.appendChild(o);
     });
-    const idx=voices.findIndex(v=>v.voiceURI===preferred||v.name+'|'+v.lang===preferred);
-    if(idx>=0)selector.value=String(idx);
-    else if(old!==''&&Number(old)<voices.length)selector.value=old;
-    else {
-      const google=voices.findIndex(v=>/google/i.test(v.name)&&!v.localService);
-      selector.value=String(google>=0?google:0);
-    }
-    note.textContent=voices.length+' voix japonaise(s) trouvée(s). Le choix reste propre à cet appareil.';
+    const match=voices.find(v=>v.voiceURI===preferred);
+    if(match)selector.value=match.voiceURI;
+    else if(previous==='auto')selector.value='auto';
+    else if(voices.some(v=>v.voiceURI===previous))selector.value=previous;
+    else if(voices.length){
+      const google=voices.find(v=>/google/i.test(v.name)&&!v.localService);
+      selector.value=(google||voices[0]).voiceURI;
+    }else selector.value='auto';
+    selector.disabled=false;
+    button.disabled=false;
+    note.textContent=voices.length
+      ? voices.length+' voix japonaise(s) détectée(s). Tu peux également choisir la voix automatique.'
+      : 'Aucune voix listée : la voix japonaise automatique peut fonctionner sur téléphone. Essaie « Écouter un exemple ».';
   }
   selector.addEventListener('change',()=>{
-    const v=voices[Number(selector.value)];if(!v)return;
-    try{localStorage.setItem(key,v.voiceURI);}catch(e){}
-    note.textContent='Voix choisie : '+v.name;
+    try{localStorage.setItem(key,selector.value);}catch(e){}
+    const v=voices.find(v=>v.voiceURI===selector.value);
+    note.textContent=v?'Voix choisie : '+v.name:'Voix japonaise automatique sélectionnée.';
   });
   function playJapanese(text,rate){
     if(!text)return;
-    synth.cancel();
-    const utterance=new SpeechSynthesisUtterance(text);
-    utterance.lang='ja-JP';utterance.rate=rate;
-    const voice=voices[Number(selector.value)];
-    if(voice)utterance.voice=voice;
-    // Garder une référence évite qu'une lecture Chrome soit interrompue trop tôt.
-    activeUtterance=utterance;
-    utterance.onend=()=>{if(activeUtterance===utterance)activeUtterance=null;};
-    utterance.onerror=()=>{if(activeUtterance===utterance)activeUtterance=null;};
-    synth.resume();
-    synth.speak(utterance);
+    try{
+      synth.cancel();
+      const utterance=new SpeechSynthesisUtterance(text);
+      utterance.lang='ja-JP';
+      utterance.rate=(typeof rate==='number'&&rate>0)?rate:0.9;
+      const choice=voices.find(v=>v.voiceURI===selector.value);
+      if(choice)utterance.voice=choice;
+      // Sans voix exposée, laisser voice=null et lang=ja-JP pour Android.
+      activeUtterance=utterance;
+      utterance.onend=()=>{if(activeUtterance===utterance)activeUtterance=null;};
+      utterance.onerror=e=>{
+        if(activeUtterance===utterance)activeUtterance=null;
+        note.textContent='Lecture impossible ('+(e.error||'erreur inconnue')+'). Vérifie la synthèse vocale et le volume de ton appareil.';
+      };
+      synth.speak(utterance);
+      if(synth.paused)synth.resume();
+    }catch(e){note.textContent='Impossible de lancer la lecture : '+e.message;}
   }
-  // Point d'entrée explicite : toutes les lectures utilisent la voix choisie.
-  // Ne remplace pas les fonctions globales speak/courseSpeak déjà définies.
   window.monJaponaisSpeak=playJapanese;
   button.addEventListener('click',()=>playJapanese('こんにちは。ありがとうございます。',0.95));
   populate();
-  synth.addEventListener('voiceschanged',populate);
+  if(typeof synth.addEventListener==='function')synth.addEventListener('voiceschanged',populate);
 })();
 </script>
 </body></html>
